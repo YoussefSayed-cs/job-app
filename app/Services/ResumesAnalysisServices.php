@@ -27,7 +27,13 @@ class ResumesAnalysisServices
             }
 
             $fileContent = Storage::disk('cloud')->get($fileUri);
-            $base64Pdf = base64_encode($fileContent);
+            
+            // Parse PDF to Text using smalot/pdfparser
+            $parser = new \Smalot\PdfParser\Parser();
+            $pdf = $parser->parseContent($fileContent);
+            $pdfText = $pdf->getText(); 
+
+            $promptText = "Extract resume details and return ONLY a valid JSON object with keys: summary (string), skills (array of strings), experience (array of objects), education (array of objects). No markdown, no explanation.\n\nResume Text:\n" . $pdfText;
 
             $response = Http::withHeaders([
                 'x-goog-api-key' => config('services.gemini.key'),
@@ -36,13 +42,7 @@ class ResumesAnalysisServices
                 'contents' => [
                     [
                         'parts' => [
-                            ['text' => "Extract resume details and return ONLY a valid JSON object with keys: summary (string), skills (array of strings), experience (array of objects), education (array of objects). No markdown, no explanation."],
-                            [
-                                'inlineData' => [
-                                    'mimeType' => 'application/pdf',
-                                    'data' => $base64Pdf
-                                ]
-                            ]
+                            ['text' => $promptText]
                         ]
                     ]
                 ],
@@ -62,13 +62,7 @@ class ResumesAnalysisServices
                     'contents' => [
                         [
                             'parts' => [
-                                ['text' => "Extract resume details and return ONLY a valid JSON object with keys: summary (string), skills (array of strings), experience (array of objects), education (array of objects). No markdown, no explanation."],
-                                [
-                                    'inlineData' => [
-                                        'mimeType' => 'application/pdf',
-                                        'data' => $base64Pdf
-                                    ]
-                                ]
+                                ['text' => $promptText]
                             ]
                         ]
                     ],
