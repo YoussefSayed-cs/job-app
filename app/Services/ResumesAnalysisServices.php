@@ -31,7 +31,7 @@ class ResumesAnalysisServices
             // Parse PDF to Text using smalot/pdfparser
             $parser = new \Smalot\PdfParser\Parser();
             $pdf = $parser->parseContent($fileContent);
-            $pdfText = $pdf->getText(); 
+            $pdfText = $pdf->getText();
 
             $promptText = "Extract resume details and return ONLY a valid JSON object with keys: summary (string), skills (array of strings), experience (array of objects), education (array of objects). No markdown, no explanation.\n\nResume Text:\n" . $pdfText;
 
@@ -93,41 +93,29 @@ class ResumesAnalysisServices
                     ['parts' => [['text' => $prompt]]]
                 ],
                 'generationConfig' => [
-                    'temperature' => 0.2,
+                    'temperature' => $temperature,
                 ]
             ]);
 
-            // Handle Rate Limit (Free Tier)
-            if ($response->status() === 429) {
-                Log::warning('Gemini Rate Limit Hit (Analysis). Sleeping for 15 seconds...');
-                sleep(15);
-                $response = Http::withHeaders([
-                    'x-goog-api-key' => config('services.gemini.key'),
-                    'Content-Type'   => 'application/json',
-                ])->post($this->baseUrl, [
-                    'contents' => [
-                        ['parts' => [['text' => $prompt]]]
-                    ],
-                    'generationConfig' => [
-                        'temperature' => 0.2,
-                    ]
-                ]);
+            if ($response->successful()) {
+                return $response->json('candidates.0.content.parts.0.text');
             }
 
-            if ($response->failed()) {
-                Log::error('Gemini Analysis Error: ' . $response->status() . ' ' . $response->body());
-                return ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Analysis failed.'];
+            $status = $response->status();
+            
+            if ($status === 429 || $status === 503) {
+                Log::warning("Gemini API Error {$status} on attempt {$attempt}. Retrying in 10s...");
+                if ($attempt < $maxRetries) {
+                    sleep(10);
+                    continue;
+                }
             }
-
-            $text = $response->json('candidates.0.content.parts.0.text');
-            $text = preg_replace('/```json\s*(.*?)\s*```/is', '$1', $text);
-            $text = preg_replace('/```\s*(.*?)\s*```/is', '$1', $text);
-            return json_decode($text, true) ?? ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Analysis failed.'];
-
-        } catch (\Throwable $e) {
-            Log::error('Resume Analysis Failed: ' . $e->getMessage());
-            return ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Service error.'];
+            
+            Log::error('Gemini API Final Error: ' . $status . ' ' . $response->body());
+            break;
         }
+
+        return null;
     }
 
     private function emptySchema(): array
