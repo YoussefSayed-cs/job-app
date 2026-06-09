@@ -85,17 +85,28 @@ class ResumesAnalysisServices
 
         while ($attempt < $maxRetries) {
             $attempt++;
-            $response = Http::withHeaders([
-                'x-goog-api-key' => config('services.gemini.key'),
-                'Content-Type'   => 'application/json',
-            ])->post($this->baseUrl, [
-                'contents' => [
-                    ['parts' => [['text' => $prompt]]]
-                ],
-                'generationConfig' => [
-                    'temperature' => $temperature,
-                ]
-            ]);
+            
+            try {
+                $response = Http::withHeaders([
+                    'x-goog-api-key' => config('services.gemini.key'),
+                    'Content-Type'   => 'application/json',
+                ])->timeout(120)->post($this->baseUrl, [
+                    'contents' => [
+                        ['parts' => [['text' => $prompt]]]
+                    ],
+                    'generationConfig' => [
+                        'temperature' => $temperature,
+                    ]
+                ]);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                // If there's a connection exception (like cURL 28 timeout), treat it as a retriable error
+                Log::warning("Gemini API Connection Error on attempt {$attempt}: " . $e->getMessage() . ". Retrying in 10s...");
+                if ($attempt < $maxRetries) {
+                    sleep(10);
+                    continue;
+                }
+                throw $e;
+            }
 
             if ($response->successful()) {
                 return $response->json('candidates.0.content.parts.0.text');
