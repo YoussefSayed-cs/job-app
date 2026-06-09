@@ -23,6 +23,7 @@
         "laravel/tinker": "^2.10.1",
         "league/flysystem-aws-s3-v3": "^3.30",
         "openai-php/laravel": "^0.18.0",
+        "smalot/pdfparser": "^2.12",
         "spatie/pdf-to-text": "1.53.*",
         "symfony/process": "7.4.*",
         "tymon/jwt-auth": "^2.2"
