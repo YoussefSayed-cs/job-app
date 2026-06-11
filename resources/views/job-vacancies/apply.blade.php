@@ -30,7 +30,7 @@
                 </div>
             </div>
 
-            <form action="{{ route('job-vacancy.processApplications', $job_vacancy->id) }}" method="POST" enctype="multipart/form-data" class="space-y-8 mt-10 relative z-10 max-w-2xl">
+            <form x-data="{ fileName: '', isSubmitting: false }" @submit="isSubmitting = true" action="{{ route('job-vacancy.processApplications', $job_vacancy->id) }}" method="POST" enctype="multipart/form-data" class="space-y-8 mt-10 relative z-10 max-w-2xl">
                 @csrf
 
                 <!-- Resume Selection -->
@@ -60,7 +60,7 @@
                 </div>
 
                 <!-- Upload New Resume -->
-                <div x-data="{ fileName: '' }">
+                <div>
                     <label class="flex items-center gap-4 p-4 rounded-xl border border-slate-700/50 bg-slate-800/30 hover:border-brand-500/50 hover:bg-slate-800/50 transition-all cursor-pointer group mb-4">
                         <div class="relative flex items-center">
                             <input type="radio" name="resume_option" id="new_resume_radio" value="new_resume" class="peer sr-only" :checked="fileName">
@@ -92,8 +92,18 @@
                 </div>
 
                 <div class="pt-4">
-                    <button type="submit" class="w-full flex justify-center py-4 px-4 border border-transparent rounded-xl shadow-lg shadow-brand-500/20 text-base font-bold text-white bg-brand-600 hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 focus:ring-offset-slate-900 transition-all hover:-translate-y-0.5">
-                        Submit Application
+                    <button type="submit" 
+                            :disabled="isSubmitting" 
+                            :class="{ 'opacity-70 cursor-not-allowed': isSubmitting, 'hover:-translate-y-0.5 hover:bg-brand-500': !isSubmitting }" 
+                            class="w-full flex justify-center py-4 px-4 border border-transparent rounded-xl shadow-lg shadow-brand-500/20 text-base font-bold text-white bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 focus:ring-offset-slate-900 transition-all">
+                        <span x-show="!isSubmitting">Submit Application</span>
+                        <span x-show="isSubmitting" class="flex items-center gap-2" style="display: none;">
+                            <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Analyzing Resume...
+                        </span>
                     </button>
                 </div>
             </form>

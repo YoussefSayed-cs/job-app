@@ -4,7 +4,7 @@
         <p class="text-slate-400 text-sm mt-2">Join Shagalni and start your career journey.</p>
     </div>
 
-    <form method="POST" action="{{ route('register') }}" class="space-y-5">
+    <form x-data="{ isSubmitting: false }" @submit="isSubmitting = true" method="POST" action="{{ route('register') }}" class="space-y-5">
         @csrf
 
         <!-- Name -->
@@ -40,8 +40,18 @@
         </div>
 
         <div class="pt-2">
-            <button type="submit" class="w-full flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-lg shadow-brand-500/20 text-sm font-bold text-white bg-brand-600 hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 focus:ring-offset-slate-900 transition-all hover:-translate-y-0.5">
-                {{ __('Register') }}
+            <button type="submit" 
+                    :disabled="isSubmitting" 
+                    :class="{ 'opacity-70 cursor-not-allowed': isSubmitting, 'hover:-translate-y-0.5 hover:bg-brand-500': !isSubmitting }" 
+                    class="w-full flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-lg shadow-brand-500/20 text-sm font-bold text-white bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 focus:ring-offset-slate-900 transition-all">
+                <span x-show="!isSubmitting">{{ __('Register') }}</span>
+                <span x-show="isSubmitting" class="flex items-center gap-2" style="display: none;">
+                    <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    {{ __('Registering...') }}
+                </span>
             </button>
         </div>
 
