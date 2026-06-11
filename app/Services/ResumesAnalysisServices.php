@@ -2,14 +2,22 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\Client\ConnectionException;
+use RuntimeException;
 
 class ResumesAnalysisServices
 {
-    protected string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent';
+    // ─── Constants ────────────────────────────────────────────────────────────
+    private const API_URL          = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+    private const MAX_RETRIES      = 3;
+    private const RETRY_DELAY_SEC  = 10;
+    private const REQUEST_TIMEOUT  = 120;
+    private const RETRYABLE_CODES  = [429, 503];
 
+    // ─── Constructor ──────────────────────────────────────────────────────────
     public function __construct()
     {
         if (empty(config('services.gemini.key'))) {
@@ -17,125 +25,236 @@ class ResumesAnalysisServices
         }
     }
 
+    // ─── Public API ───────────────────────────────────────────────────────────
 
+    /**
+     * Extract structured information from a PDF resume stored in cloud.
+     */
     public function extractResumeInformation(string $fileUri): array
     {
         try {
-            if (!Storage::disk('cloud')->exists($fileUri)) {
-                Log::error("Gemini cannot find file at: " . $fileUri);
+            $pdfText = $this->readPdfFromStorage($fileUri);
+
+            if (empty(trim($pdfText))) {
+                Log::warning('PDF parsed text is empty.', ['file' => $fileUri]);
                 return $this->emptySchema();
             }
 
-            $fileContent = Storage::disk('cloud')->get($fileUri);
-            
-            // Parse PDF to Text using smalot/pdfparser
-            $parser = new \Smalot\PdfParser\Parser();
-            $pdf = $parser->parseContent($fileContent);
-            $pdfText = $pdf->getText();
+            $response = $this->callGeminiWithRetry(
+                $this->buildExtractionPrompt($pdfText)
+            );
 
-            $promptText = "Extract resume details and return ONLY a valid JSON object with keys: summary (string), skills (array of strings), experience (array of objects), education (array of objects). No markdown, no explanation.\n\nResume Text:\n" . $pdfText;
-
-            $text = $this->callGeminiWithRetry($promptText);
-            
-            if (!$text) {
-                return $this->emptySchema();
-            }
-
-            $text = preg_replace('/```json\s*(.*?)\s*```/is', '$1', $text);
-            $text = preg_replace('/```\s*(.*?)\s*```/is', '$1', $text);
-            return json_decode($text, true) ?? $this->emptySchema();
+            return $this->parseJsonResponse($response) ?? $this->emptySchema();
 
         } catch (\Throwable $e) {
-            Log::error('Extraction Failed: ' . $e->getMessage());
+            Log::error('Resume extraction failed.', [
+                'file'  => $fileUri,
+                'error' => $e->getMessage(),
+            ]);
             return $this->emptySchema();
         }
     }
 
-
-    public function analyzeResume($job_vacancy, array $resumeData): array
+    /**
+     * Score and provide feedback for a resume against a job vacancy.
+     */
+    public function analyzeResume(mixed $jobVacancy, array $resumeData): array
     {
+        $fallback = ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Analysis failed.'];
+
         try {
-            $jobInfo = [
-                'title' => $job_vacancy->title ?? $job_vacancy->utils ?? 'Software Engineer',
-                'description' => $job_vacancy->description ?? ''
-            ];
+            $jobInfo  = $this->extractJobInfo($jobVacancy);
+            $response = $this->callGeminiWithRetry(
+                $this->buildAnalysisPrompt($jobInfo, $resumeData),
+                temperature: 0.2
+            );
 
-            $prompt = "Compare this resume with the job requirements. Return ONLY a valid JSON object with exactly these keys: {\"aiGeneratedScore\": int between 0-100, \"aiGeneratedFeedback\": string}. No markdown, no code blocks, just raw JSON.\n\nJob: " . json_encode($jobInfo) . "\n\nResume: " . json_encode($resumeData);
+            $result = $this->parseJsonResponse($response);
 
-            $text = $this->callGeminiWithRetry($prompt, 0.2);
-            
-            if (!$text) {
-                return ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Analysis failed due to API limits.'];
-            }
-
-            $text = preg_replace('/```json\s*(.*?)\s*```/is', '$1', $text);
-            $text = preg_replace('/```\s*(.*?)\s*```/is', '$1', $text);
-            return json_decode($text, true) ?? ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Analysis failed.'];
+            return $this->validateAnalysisResult($result) ?? $fallback;
 
         } catch (\Throwable $e) {
-            Log::error('Resume Analysis Failed: ' . $e->getMessage());
-            return ['aiGeneratedScore' => 0, 'aiGeneratedFeedback' => 'Service error.'];
+            Log::error('Resume analysis failed.', [
+                'job'   => $jobVacancy->title ?? 'unknown',
+                'error' => $e->getMessage(),
+            ]);
+            return $fallback;
         }
     }
 
+    // ─── Private: Storage & PDF ───────────────────────────────────────────────
+
+    /**
+     * Download the file from cloud storage and extract its text via PDF parser.
+     *
+     * @throws RuntimeException if the file does not exist in storage.
+     */
+    private function readPdfFromStorage(string $fileUri): string
+    {
+        if (!Storage::disk('cloud')->exists($fileUri)) {
+            throw new RuntimeException("File not found in cloud storage: {$fileUri}");
+        }
+
+        $content = Storage::disk('cloud')->get($fileUri);
+
+        $parser = new \Smalot\PdfParser\Parser();
+        $pdf    = $parser->parseContent($content);
+
+        return $pdf->getText();
+    }
+
+    // ─── Private: Prompt Builders ─────────────────────────────────────────────
+
+    private function buildExtractionPrompt(string $pdfText): string
+    {
+        return <<<PROMPT
+        Extract resume details and return ONLY a valid JSON object matching this exact structure:
+        {
+            "summary":    "string",
+            "skills":     ["string"],
+            "experience": [{"title": "string", "company": "string", "duration": "string", "description": "string"}],
+            "education":  [{"degree": "string", "institution": "string", "year": "string"}]
+        }
+        No markdown, no code blocks, no explanation — raw JSON only.
+
+        Resume Text:
+        {$pdfText}
+        PROMPT;
+    }
+
+    private function buildAnalysisPrompt(array $jobInfo, array $resumeData): string
+    {
+        $job    = json_encode($jobInfo,    JSON_UNESCAPED_UNICODE);
+        $resume = json_encode($resumeData, JSON_UNESCAPED_UNICODE);
+
+        return <<<PROMPT
+        Compare the resume against the job requirements and return ONLY a raw JSON object:
+        {"aiGeneratedScore": <integer 0–100>, "aiGeneratedFeedback": "<string>"}
+        No markdown, no code blocks.
+
+        Job: {$job}
+        Resume: {$resume}
+        PROMPT;
+    }
+
+    // ─── Private: Job Info Extraction ─────────────────────────────────────────
+
+    private function extractJobInfo(mixed $jobVacancy): array
+    {
+        return [
+            'title'       => $jobVacancy->title       ?? 'Software Engineer',
+            'description' => $jobVacancy->description ?? '',
+        ];
+    }
+
+    // ─── Private: Gemini API ──────────────────────────────────────────────────
+
+    /**
+     * Call Gemini API with exponential-friendly retry on transient errors.
+     */
     private function callGeminiWithRetry(string $prompt, float $temperature = 0.1): ?string
     {
-        $maxRetries = 3;
-        $attempt = 0;
+        $lastError = null;
 
-        while ($attempt < $maxRetries) {
-            $attempt++;
-            
+        for ($attempt = 1; $attempt <= self::MAX_RETRIES; $attempt++) {
             try {
                 $response = Http::withHeaders([
                     'x-goog-api-key' => config('services.gemini.key'),
                     'Content-Type'   => 'application/json',
-                ])->timeout(120)->post($this->baseUrl, [
-                    'contents' => [
-                        ['parts' => [['text' => $prompt]]]
-                    ],
-                    'generationConfig' => [
-                        'temperature' => $temperature,
-                    ]
+                ])
+                ->timeout(self::REQUEST_TIMEOUT)
+                ->post(self::API_URL, [
+                    'contents'         => [['parts' => [['text' => $prompt]]]],
+                    'generationConfig' => ['temperature' => $temperature],
                 ]);
-            } catch (\Illuminate\Http\Client\ConnectionException $e) {
-                // If there's a connection exception (like cURL 28 timeout), treat it as a retriable error
-                Log::warning("Gemini API Connection Error on attempt {$attempt}: " . $e->getMessage() . ". Retrying in 10s...");
-                if ($attempt < $maxRetries) {
-                    sleep(10);
-                    continue;
+
+                if ($response->successful()) {
+                    return $response->json('candidates.0.content.parts.0.text');
                 }
-                throw $e;
+
+                $status = $response->status();
+
+                // Non-retryable error — bail immediately
+                if (!in_array($status, self::RETRYABLE_CODES, strict: true)) {
+                    Log::error('Gemini API non-retryable error.', [
+                        'status' => $status,
+                        'body'   => $response->body(),
+                    ]);
+                    return null;
+                }
+
+                Log::warning("Gemini API error {$status} on attempt {$attempt}.", [
+                    'max_retries' => self::MAX_RETRIES,
+                ]);
+
+            } catch (ConnectionException $e) {
+                Log::warning("Gemini connection error on attempt {$attempt}.", [
+                    'error' => $e->getMessage(),
+                ]);
+                $lastError = $e;
             }
 
-            if ($response->successful()) {
-                return $response->json('candidates.0.content.parts.0.text');
+            // Sleep before retry (skip sleep after the last attempt)
+            if ($attempt < self::MAX_RETRIES) {
+                sleep(self::RETRY_DELAY_SEC);
             }
+        }
 
-            $status = $response->status();
-            
-            if ($status === 429 || $status === 503) {
-                Log::warning("Gemini API Error {$status} on attempt {$attempt}. Retrying in 10s...");
-                if ($attempt < $maxRetries) {
-                    sleep(10);
-                    continue;
-                }
-            }
-            
-            Log::error('Gemini API Final Error: ' . $status . ' ' . $response->body());
-            break;
+        Log::error('Gemini API failed after all retries.', [
+            'exception' => $lastError?->getMessage(),
+        ]);
+
+        return null;
+    }
+
+    // ─── Private: Response Parsing & Validation ───────────────────────────────
+
+    /**
+     * Strip markdown fences and decode JSON from Gemini's raw response.
+     */
+    private function parseJsonResponse(?string $text): ?array
+    {
+        if (empty($text)) {
+            return null;
+        }
+
+        // Remove ```json ... ``` or ``` ... ``` wrappers
+        $clean = preg_replace('/^```(?:json)?\s*/m', '', $text);
+        $clean = preg_replace('/\s*```$/m', '',          $clean);
+        $clean = trim($clean);
+
+        return json_decode($clean, associative: true) ?: null;
+    }
+
+    /**
+     * Ensure the analysis result has the expected shape and sane score bounds.
+     */
+    private function validateAnalysisResult(?array $result): ?array
+    {
+        if (
+            is_array($result)
+            && isset($result['aiGeneratedScore'], $result['aiGeneratedFeedback'])
+            && is_numeric($result['aiGeneratedScore'])
+            && $result['aiGeneratedScore'] >= 0
+            && $result['aiGeneratedScore'] <= 100
+            && is_string($result['aiGeneratedFeedback'])
+        ) {
+            $result['aiGeneratedScore'] = (int) $result['aiGeneratedScore'];
+            return $result;
         }
 
         return null;
     }
 
+    // ─── Private: Helpers ─────────────────────────────────────────────────────
+
     private function emptySchema(): array
     {
         return [
-            'summary' => '',
-            'skills' => [],
+            'summary'    => '',
+            'skills'     => [],
             'experience' => [],
-            'education' => [],
+            'education'  => [],
         ];
     }
 }
