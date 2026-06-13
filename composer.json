@@ -17,12 +17,11 @@
     "require": {
         "php": "^8.2",
         "aws/aws-sdk-php": "^3.366",
-        "google/gemini": "^2.7",
+        "google-gemini-php/laravel": "^2.0",
         "job/shared": "*",
         "laravel/framework": "^12.0",
         "laravel/tinker": "^2.10.1",
         "league/flysystem-aws-s3-v3": "^3.30",
-        "openai-php/laravel": "^0.18.0",
         "smalot/pdfparser": "^2.12",
         "spatie/pdf-to-text": "1.53.*",
         "symfony/process": "7.4.*",
