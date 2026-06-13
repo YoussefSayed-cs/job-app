@@ -28,9 +28,9 @@ class ProcessResumeAnalysis implements ShouldQueue
      * بنمرر IDs فقط (مش Objects) عشان SerializesModels يشتغل صح
      */
     public function __construct(
-        private readonly int  $jobApplicationId,
-        private readonly int  $resumeId,
-        private readonly int  $jobVacancyId,
+        private readonly string $jobApplicationId,
+        private readonly string $resumeId,
+        private readonly string $jobVacancyId,
         private readonly bool $isNewResume,
     ) {}
 
