@@ -5,6 +5,11 @@
         </h2>
     </x-slot>
 
+    {{-- Auto-refresh when any application is still being analyzed --}}
+    @if($jobApplications->contains(fn($app) => $app->aiGeneratedScore == 0 && str_contains($app->aiGeneratedFeedback ?? '', 'in progress')))
+        <meta http-equiv="refresh" content="15">
+    @endif
+
     <div class="space-y-6">
         @forelse ($jobApplications as $jobApplication)
             <div class="glass-card rounded-2xl p-6 transition-all duration-300 hover:bg-white/5 group relative overflow-hidden">
@@ -65,13 +70,14 @@
                             $score    = $jobApplication->aiGeneratedScore;
                             $feedback = $jobApplication->aiGeneratedFeedback ?? '';
                             $errorPhrases = ['Service error.', 'Analysis failed.', 'AI evaluation is temporarily unavailable.', 'No AI feedback'];
-                            $isError  = $score == 0 && in_array(trim($feedback), $errorPhrases);
+                            $isProcessing = $score == 0 && str_contains($feedback, 'in progress');
+                            $isError  = !$isProcessing && $score == 0 && in_array(trim($feedback), $errorPhrases);
 
                             $scoreColor = match(true) {
-                                !$isError && $score >= 70 => 'bg-green-500/10 border-green-500/30 text-green-300',
-                                !$isError && $score >= 40 => 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300',
-                                !$isError && $score > 0   => 'bg-red-500/10 border-red-500/30 text-red-300',
-                                default                   => 'bg-white/5 border-white/10 text-white/30',
+                                !$isError && !$isProcessing && $score >= 70 => 'bg-green-500/10 border-green-500/30 text-green-300',
+                                !$isError && !$isProcessing && $score >= 40 => 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300',
+                                !$isError && !$isProcessing && $score > 0   => 'bg-red-500/10 border-red-500/30 text-red-300',
+                                default                                     => 'bg-white/5 border-white/10 text-white/30',
                             };
                         @endphp
 
@@ -81,7 +87,15 @@
                             </span>
 
                             {{-- AI Score Badge --}}
-                            @if($isError)
+                            @if($isProcessing)
+                                <div class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium animate-pulse" title="AI analysis in progress">
+                                    <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Analyzing…
+                                </div>
+                            @elseif($isError)
                                 <div class="flex items-center gap-1 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-white/30 text-xs font-medium" title="AI analysis unavailable">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                     Pending analysis
@@ -95,7 +109,7 @@
                         </div>
 
                         {{-- AI Feedback --}}
-                        @if(!$isError && $feedback)
+                        @if(!$isError && !$isProcessing && $feedback)
                         <div class="mt-2 p-3 rounded-xl bg-white/5 border border-white/10 w-full text-right group/feedback relative">
                             <p class="text-xs text-white/50 italic line-clamp-2 group-hover/feedback:line-clamp-none transition-all">
                                 "{{ $feedback }}"

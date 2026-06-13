@@ -3,10 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\AbblyJobRequest;
+use App\Jobs\ProcessResumeAnalysis;
+use App\Models\User;
 use App\Models\job_application;
 use App\Models\job_vacancy;
 use App\Models\resume;
 use App\Services\ResumesAnalysisServices;
+use App\Notifications\newJobApply;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -36,15 +39,9 @@ class JobVacancyController extends Controller
 
     public function processApplications(AbblyJobRequest $request, string $id)
     {
-        $job_vacancy = job_vacancy::findOrFail($id);
-        $resumeID = null;
-
-        $extracted = [
-            'summary' => '',
-            'skills' => [],
-            'experience' => [],
-            'education' => [],
-        ];
+        $job_vacancy  = job_vacancy::findOrFail($id);
+        $resumeID     = null;
+        $isNewResume  = false;
 
         /*
         |------------------------------------------------------------------
@@ -62,90 +59,82 @@ class JobVacancyController extends Controller
                 return back()->withErrors(['resume_option' => 'Invalid resume selected']);
             }
 
-            $resumeID = $resume->id;
-
-            // التأكد من استرجاع البيانات بصيغة مصفوفة (Array)
-            $extracted = [
-                'summary' => $resume->summary ?? '',
-                'skills' => is_array($resume->skills) ? $resume->skills : json_decode($resume->skills ?? '[]', true),
-                'experience' => is_array($resume->experience) ? $resume->experience : json_decode($resume->experience ?? '[]', true),
-                'education' => is_array($resume->education) ? $resume->education : json_decode($resume->education ?? '[]', true),
-            ];
+            $resumeID    = $resume->id;
+            $isNewResume = false;
         }
 
         /*
         |------------------------------------------------------------------
-        | NEW RESUME
+        | NEW RESUME — بس رفع الملف، مفيش AI هنا
         |------------------------------------------------------------------
         */
         elseif ($request->resume_option === 'new_resume') {
-            $file = $request->file('resume_file');
+            $file     = $request->file('resume_file');
             $fileName = 'resume_' . time() . '.pdf';
-            $path = $file->storeAs('resume', $fileName, 'cloud');
+            $path     = $file->storeAs('resume', $fileName, 'cloud');
 
-
-            try {
-                $extracted = $this->resumeService->extractResumeInformation($path);
-            } catch (\Throwable $e) {
-                Log::warning('AI extraction failed: ' . $e->getMessage());
-            }
-
+            // بنحفظ الـ resume بقيم فاضية، الـ Queue هو اللي هيملاها
             $resume = resume::create([
-                'filename' => $file->getClientOriginalName(),
-                'fileUri' => $path,
-                'userID' => Auth::id(),
+                'filename'       => $file->getClientOriginalName(),
+                'fileUri'        => $path,
+                'userID'         => Auth::id(),
                 'contactDetails' => [
-                    'name' => Auth::user()->name,
+                    'name'  => Auth::user()->name,
                     'email' => Auth::user()->email,
                 ],
-                'summary' => $extracted['summary'] ?? '',
-                'skills' => $extracted['skills'] ?? [],
-                'experience' => $extracted['experience'] ?? [],
-                'education' => $extracted['education'] ?? [],
+                'summary'    => '',
+                'skills'     => [],
+                'experience' => [],
+                'education'  => [],
             ]);
 
-            $resumeID = $resume->id;
+            $resumeID    = $resume->id;
+            $isNewResume = true;
         }
 
         /*
         |------------------------------------------------------------------
-        | AI EVALUATION
+        | JOB APPLICATION — بنحفظها فوراً بـ score = 0 وstatus انتظار
         |------------------------------------------------------------------
         */
-        try {
-            // نرسل البيانات المستخرجة (سواء كانت من CV قديم أو جديد) للتحليل
-            $evaluation = $this->resumeService->analyzeResume($job_vacancy, $extracted);
-        } catch (\Throwable $e) {
-            Log::warning('AI evaluation skipped: ' . $e->getMessage());
-            $evaluation = [
-                'aiGeneratedScore' => 0,
-                'aiGeneratedFeedback' => 'AI evaluation is temporarily unavailable.',
-            ];
-        }
-
         $jobApplication = job_application::create([
-            'status' => 'pending',
-            'aiGeneratedScore' => $evaluation['aiGeneratedScore'] ?? 0,
-            'aiGeneratedFeedback' => $evaluation['aiGeneratedFeedback'] ?? 'No AI feedback',
-            'jobVacancyID' => $job_vacancy->id,
-            'resumeID' => $resumeID,
-            'userID' => Auth::id(),
+            'status'              => 'pending',
+            'aiGeneratedScore'    => 0,
+            'aiGeneratedFeedback' => 'AI evaluation is in progress…',
+            'jobVacancyID'        => $job_vacancy->id,
+            'resumeID'            => $resumeID,
+            'userID'              => Auth::id(),
         ]);
 
+        /*
+        |------------------------------------------------------------------
+        | DISPATCH QUEUE JOB — بنبعت الشغل للـ Background
+        |------------------------------------------------------------------
+        */
+        ProcessResumeAnalysis::dispatch(
+            $jobApplication->id,
+            $resumeID,
+            $job_vacancy->id,
+            $isNewResume,
+        );
+
+        /*
+        |------------------------------------------------------------------
+        | NOTIFICATIONS
+        |------------------------------------------------------------------
+        */
         $owner = $job_vacancy->company->Owner;
         if ($owner) {
-            $owner->notify(new \App\Notifications\newJobApply(Auth::user(), $job_vacancy, $jobApplication, $jobApplication->id));
+            $owner->notify(new newJobApply(Auth::user(), $job_vacancy, $jobApplication, $jobApplication->id));
         }
 
-        $admins = \App\Models\User::where('role', 'admin')->get();
+        $admins = User::where('role', 'admin')->get();
         foreach ($admins as $admin) {
             if ($owner && $admin->id === $owner->id) continue;
-            $admin->notify(new \App\Notifications\newJobApply(Auth::user(), $job_vacancy, $jobApplication, $jobApplication->id));
+            $admin->notify(new newJobApply(Auth::user(), $job_vacancy, $jobApplication, $jobApplication->id));
         }
 
-        return redirect()->route('job-applications.index', $job_vacancy->id)
-            ->with('success', 'Your application has been submitted successfully!');
-
+        // رد فوري! مش بنستنى Gemini خالص
+        return redirect()->route('job-applications.index', $job_vacancy->id)->with('success', 'Your application has been submitted! AI evaluation is in progress and will be ready shortly.');
     }
-
 }
