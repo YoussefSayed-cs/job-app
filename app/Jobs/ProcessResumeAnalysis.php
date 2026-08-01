@@ -17,15 +17,15 @@ class ProcessResumeAnalysis implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    // ─── إعدادات الـ Job ──────────────────────────────────────────────────────
-    public int $tries   = 3;           // عدد محاولات إعادة التشغيل عند الفشل
-    public int $timeout = 300;         // أقصى وقت للـ Job (5 دقائق)
-    public array $backoff = [60, 120, 180]; // ثواني الانتظار بين كل محاولة
+    // Job configuration settings
+    public int $tries   = 3;           // Number of retry attempts on failure
+    public int $timeout = 300;         // Maximum execution time (5 minutes)
+    public array $backoff = [60, 120, 180]; // Wait time in seconds between retries
 
-    // ─── Constructor ──────────────────────────────────────────────────────────
+    // Constructor
 
     /**
-     * بنمرر IDs فقط (مش Objects) عشان SerializesModels يشتغل صح
+     * Pass only IDs (not full objects) to ensure proper model serialization
      */
     public function __construct(
         private readonly string $jobApplicationId,
@@ -34,7 +34,7 @@ class ProcessResumeAnalysis implements ShouldQueue
         private readonly bool $isNewResume,
     ) {}
 
-    // ─── Handle: ده اللي بيشتغل في الـ Background ────────────────────────────
+    // Main job handler that runs in the background queue
 
     public function handle(ResumesAnalysisServices $resumeService): void
     {
@@ -43,7 +43,7 @@ class ProcessResumeAnalysis implements ShouldQueue
         $jobVacancy     = job_vacancy::findOrFail($this->jobVacancyId);
 
         try {
-            // ─── Step 1: لو CV جديد، نستخرج البيانات منه أولاً ────────────────
+            // Step 1: If new resume, extract data from it first
             if ($this->isNewResume) {
                 $extracted = $resumeService->extractResumeInformation($resume->fileUri);
 
@@ -54,7 +54,7 @@ class ProcessResumeAnalysis implements ShouldQueue
                     'education'  => $extracted['education']  ?? [],
                 ]);
             } else {
-                // ─── CV موجود: نجيب بياناته من الداتابيز ────────────────────
+                // Step 1b: For existing resume, fetch data from database
                 $extracted = [
                     'summary'    => $resume->summary ?? '',
                     'skills'     => is_array($resume->skills)
@@ -69,10 +69,10 @@ class ProcessResumeAnalysis implements ShouldQueue
                 ];
             }
 
-            // ─── Step 2: نحلل الـ CV مقابل الوظيفة ──────────────────────────
+            // Step 2: Analyze resume against the job requirements
             $evaluation = $resumeService->analyzeResume($jobVacancy, $extracted);
 
-            // ─── Step 3: نحدّث الـ Job Application بالنتيجة ──────────────────
+            // Step 3: Update job application with analysis results
             $jobApplication->update([
                 'aiGeneratedScore'    => $evaluation['aiGeneratedScore']    ?? 0,
                 'aiGeneratedFeedback' => $evaluation['aiGeneratedFeedback'] ?? 'No AI feedback',
@@ -90,7 +90,7 @@ class ProcessResumeAnalysis implements ShouldQueue
                 'error'            => $e->getMessage(),
             ]);
 
-            // بنـ throw الـ exception عشان Laravel يعرف يعيد المحاولة
+            // Throw exception so Laravel retries the job
             throw $e;
         }
     }
