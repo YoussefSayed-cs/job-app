@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
+use Smalot\PdfParser\Parser;
 use Illuminate\Support\Facades\Storage;
 
 class ResumesAnalysisServices
@@ -24,7 +25,7 @@ class ResumesAnalysisServices
 
         // Read the PDF and convert it to plain text
         $pdfContent = Storage::disk('cloud')->get($fileUri);
-        $text       = (new \Smalot\PdfParser\Parser())->parseContent($pdfContent)->getText();
+        $text       = (new Parser())->parseContent($pdfContent)->getText();
 
         if (trim($text) === '') {
             return $empty;
